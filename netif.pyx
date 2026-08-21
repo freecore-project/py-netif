@@ -88,12 +88,14 @@ class AddressFamily(enum.IntEnum):
     ATM = defs.AF_ATM
     NETGRAPH = defs.AF_NETGRAPH
     SLOW = defs.AF_SLOW
-    SCLUSTER = defs.AF_SCLUSTER
     ARP = defs.AF_ARP
     BLUETOOTH = defs.AF_BLUETOOTH
     IEEE80211 = defs.AF_IEEE80211
-    INET_SDP = defs.AF_INET_SDP
-    INET6_SDP = defs.AF_INET6_SDP
+    IF HAVE_AF_SCLUSTER:
+        SCLUSTER = defs.AF_SCLUSTER
+    IF HAVE_AF_INET_SDP:
+        INET_SDP = defs.AF_INET_SDP
+        INET6_SDP = defs.AF_INET6_SDP
 
 
 class RouteFlags(enum.IntEnum):
@@ -129,7 +131,8 @@ class RoutingMessageType(enum.IntEnum):
     REDIRECT = defs.RTM_REDIRECT
     MISS = defs.RTM_MISS
     LOCK = defs.RTM_LOCK
-    RESOLVE = defs.RTM_RESOLVE
+    IF HAVE_RTM_RESOLVE:
+        RESOLVE = defs.RTM_RESOLVE
     NEWADDR = defs.RTM_NEWADDR
     DELADDR = defs.RTM_DELADDR
     IFINFO = defs.RTM_IFINFO
@@ -517,7 +520,7 @@ class InterfaceAddress(object):
         if isinstance(address, (ipaddress.IPv4Interface, ipaddress.IPv6Interface)):
             self.address = address.ip
             self.netmask = address.netmask
-            self.broadcast = address.network.broadcast_address
+            self.broadcast = address.network.broadcast_address if address.version == 4 else None
         else:
             self.address = address
             self.netmask = None
@@ -535,7 +538,8 @@ class InterfaceAddress(object):
         return u'{0}/{1}'.format(self.address, self.netmask)
 
     def __hash__(self):
-        return hash((self.af, self.address, self.netmask, self.broadcast, self.dest_address))
+        broadcast = self.broadcast if self.af == AddressFamily.INET else None
+        return hash((self.af, self.address, self.netmask, broadcast, self.dest_address))
 
     def __getstate__(self, stats=False):
         ret = {
@@ -560,7 +564,7 @@ class InterfaceAddress(object):
             # XXX yuck!
             ret['netmask'] = bin(int(self.netmask)).count('1')
 
-        if self.broadcast:
+        if self.broadcast and self.af == AddressFamily.INET:
             ret['broadcast'] = str(self.broadcast)
 
         return ret
@@ -570,24 +574,14 @@ class InterfaceAddress(object):
             self.af == other.af and \
             self.address == other.address and \
             self.netmask == other.netmask and \
-            self.broadcast == other.broadcast and \
+            (self.af != AddressFamily.INET or self.broadcast == other.broadcast) and \
             self.dest_address == other.dest_address and \
             self.vhid == other.vhid
 
     def __ne__(self, other):
         return not self == other
 
-# wrap socket.socket on python2 so that we can use "with"
-if not hasattr(socket.socket, '__enter__'):
-    class WrapSocket(socket.socket):
-        def __enter__(self):
-            return self
-        def __exit__(self, exc_type, exc_val, exc_frame):
-            self.close()
-
-    sock3 = WrapSocket
-else:
-    sock3 = socket.socket
+sock3 = socket.socket
 
 cdef class NetworkInterface(object):
     cdef readonly object name
@@ -676,7 +670,7 @@ cdef class NetworkInterface(object):
             memcpy(sin6.sin6_addr.s6_addr, <void*><char*>packed, 16)
 
             if address.vhid:
-                req.ifra_vhid = address.vhid
+                req6.ifra_vhid = address.vhid
 
             if self.ioctl(cmd, <void*>&req6, socket.AF_INET6) == -1:
                 raise OSError(errno, os.strerror(errno))
@@ -1174,18 +1168,43 @@ cdef class LaggInterface(NetworkInterface):
     property ports:
         def __get__(self):
             cdef defs.lagg_reqall lreq
-            cdef defs.lagg_reqport lport[16]
-            memset(&lreq, 0, cython.sizeof(lreq))
-            memset(lport, 0, cython.sizeof(lport))
-            strcpy(lreq.ra_ifname, self.nameb)
-            lreq.ra_size = cython.sizeof(lport)
-            lreq.ra_port = lport
+            cdef defs.lagg_reqport* lport = NULL
+            cdef defs.lagg_reqport* newport = NULL
+            cdef size_t size = 16 * cython.sizeof(defs.lagg_reqport)
 
-            if self.ioctl(defs.SIOCGLAGG, <void*>&lreq) == -1:
-                raise OSError(errno, os.strerror(errno))
+            result = []
+            try:
+                while True:
+                    newport = <defs.lagg_reqport*>realloc(lport, size)
+                    if newport == NULL:
+                        raise MemoryError()
+                    lport = newport
 
-            for i in range(0, lreq.ra_ports):
-                yield lport[i].rp_portname.decode('ascii'), bitmask_to_set(lport[i].rp_flags, LaggPortFlags)
+                    memset(&lreq, 0, cython.sizeof(lreq))
+                    memset(lport, 0, size)
+                    strcpy(lreq.ra_ifname, self.nameb)
+                    lreq.ra_size = size
+                    lreq.ra_port = lport
+
+                    if self.ioctl(defs.SIOCGLAGG, <void*>&lreq) == -1:
+                        raise OSError(errno, os.strerror(errno))
+
+                    if (lreq.ra_size + cython.sizeof(defs.lagg_reqport)) < size:
+                        break
+
+                    size *= 2
+
+                for i in range(0, lreq.ra_ports):
+                    result.append((
+                        lport[i].rp_portname.decode('ascii'),
+                        bitmask_to_set(lport[i].rp_flags, LaggPortFlags),
+                    ))
+            finally:
+                if lport != NULL:
+                    free(lport)
+
+            for port in result:
+                yield port
 
 
 cdef class BridgeInterface(NetworkInterface):
@@ -1208,12 +1227,14 @@ cdef class BridgeInterface(NetworkInterface):
     def add_member(self, name):
         cdef defs.ifbreq ifbr
 
+        memset(&ifbr, 0, cython.sizeof(ifbr))
         strcpy(ifbr.ifbr_ifsname, name.encode('ascii'))
         self.bridge_cmd(defs.BRDGADD, &ifbr, cython.sizeof(ifbr), True)
 
     def delete_member(self, name):
         cdef defs.ifbreq ifbr
 
+        memset(&ifbr, 0, cython.sizeof(ifbr))
         strcpy(ifbr.ifbr_ifsname, name.encode('ascii'))
         self.bridge_cmd(defs.BRDGDEL, &ifbr, cython.sizeof(ifbr), True)
 
@@ -1237,6 +1258,7 @@ cdef class BridgeInterface(NetworkInterface):
             raise Exception(f'Member {member} does not exist')
 
         cdef defs.ifbreq req;
+        memset(&req, 0, cython.sizeof(req))
         strcpy(req.ifbr_ifsname, member.encode('ascii'))
 
         # We first try to get flags for the specified member
@@ -1253,24 +1275,38 @@ cdef class BridgeInterface(NetworkInterface):
         def __get__(self):
             cdef defs.ifbreq* ifbr = NULL
             cdef defs.ifbifconf ifbc
-            cdef char *buf
+            cdef char *buf = NULL
+            cdef char *newbuf = NULL
             cdef int size = 8192
 
-            while True:
-                buf = <char*>realloc(buf, size)
-                ifbc.ifbic_len = size
-                ifbc.ifbic_buf = <defs.caddr_t>buf
+            result = []
+            try:
+                while True:
+                    newbuf = <char*>realloc(buf, size)
+                    if newbuf == NULL:
+                        raise MemoryError()
+                    buf = newbuf
 
-                self.bridge_cmd(defs.BRDGGIFS, &ifbc, cython.sizeof(ifbc), False)
+                    memset(&ifbc, 0, cython.sizeof(ifbc))
+                    ifbc.ifbic_len = size
+                    ifbc.ifbic_buf = <defs.caddr_t>buf
 
-                if (ifbc.ifbic_len + cython.sizeof(ifbr)) < size:
-                    break
+                    self.bridge_cmd(defs.BRDGGIFS, &ifbc, cython.sizeof(ifbc), False)
 
-                size *= 2
+                    if (ifbc.ifbic_len + cython.sizeof(defs.ifbreq)) < size:
+                        break
 
-            for i in range(0, ifbc.ifbic_len / cython.sizeof(defs.ifbreq)):
-                ifbr = &ifbc.ifbic_req[i]
-                yield ifbr.ifbr_ifsname.decode('ascii')
+                    size *= 2
+
+                for i in range(0, ifbc.ifbic_len // cython.sizeof(defs.ifbreq)):
+                    ifbr = &ifbc.ifbic_req[i]
+                    result.append(ifbr.ifbr_ifsname.decode('ascii'))
+            finally:
+                if buf != NULL:
+                    free(buf)
+
+            for member in result:
+                yield member
 
 
 cdef class VlanInterface(NetworkInterface):
@@ -1288,7 +1324,8 @@ cdef class VlanInterface(NetworkInterface):
         cdef defs.ifreq ifr
         cdef defs.vlanreq vlr
 
-        memset(&vlr, 0, cython.sizeof(ifr))
+        memset(&ifr, 0, cython.sizeof(ifr))
+        memset(&vlr, 0, cython.sizeof(vlr))
         strcpy(ifr.ifr_name, self.nameb)
         ifr.ifr_ifru.ifru_data = <defs.caddr_t>&vlr
 
@@ -1304,7 +1341,8 @@ cdef class VlanInterface(NetworkInterface):
         cdef defs.ifreq ifr
         cdef defs.vlanreq vlr
 
-        memset(&vlr, 0, cython.sizeof(ifr))
+        memset(&ifr, 0, cython.sizeof(ifr))
+        memset(&vlr, 0, cython.sizeof(vlr))
         strcpy(ifr.ifr_name, self.nameb)
         strcpy(vlr.vlr_parent, parent.encode('ascii'))
         vlr.vlr_tag = tag
@@ -1322,7 +1360,8 @@ cdef class VlanInterface(NetworkInterface):
         cdef defs.ifreq ifr
         cdef defs.vlanreq vlr
 
-        memset(&vlr, 0, cython.sizeof(ifr))
+        memset(&ifr, 0, cython.sizeof(ifr))
+        memset(&vlr, 0, cython.sizeof(vlr))
         strcpy(ifr.ifr_name, self.nameb)
         strcpy(vlr.vlr_parent, '\0')
         vlr.vlr_tag = 0

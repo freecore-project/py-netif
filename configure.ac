@@ -97,6 +97,41 @@ AX_CHECK_DEFINE(
 )
 
 
+dnl Checking for AF_INET_SDP define (removed in FreeBSD 14+)
+AX_CHECK_DEFINE(
+	[sys/socket.h], [AF_INET_SDP],
+	[AC_SUBST(HAVE_AF_INET_SDP, 1)],
+	[AC_SUBST(HAVE_AF_INET_SDP, 0)]
+)
+
+dnl Checking for AF_SCLUSTER define (removed in FreeBSD 14+)
+AX_CHECK_DEFINE(
+	[sys/socket.h], [AF_SCLUSTER],
+	[AC_SUBST(HAVE_AF_SCLUSTER, 1)],
+	[AC_SUBST(HAVE_AF_SCLUSTER, 0)]
+)
+
+dnl Checking for RTM_RESOLVE define (removed in FreeBSD 14+)
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+		[
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <net/route.h>
+],
+		[
+#ifdef RTM_RESOLVE
+int ok;
+(void)ok;
+#else
+choke me
+#endif
+		]
+	)],
+	[AC_SUBST(HAVE_RTM_RESOLVE, 1)],
+	[AC_SUBST(HAVE_RTM_RESOLVE, 0)]
+)
+
+
 SECTION_TITLE([RUNNING TESTS ON ifmedia.c])
 
 
