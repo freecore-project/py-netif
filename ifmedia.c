@@ -207,6 +207,21 @@ static struct ifmedia_type_to_subtype ifmedia_types_to_subtypes[] = {
 			{ NULL, 0 },
 		},
 	},
+	/*
+	 * Pairs with the { 0, NULL } end of IFM_TYPE_DESCRIPTIONS: this is
+	 * what get_toptype_ttos() returns for an unknown top-level type.
+	 */
+	{
+		{
+			{ NULL, 0 },
+		},
+		{
+			{ NULL, 0 },
+		},
+		{
+			{ NULL, 0 },
+		},
+	},
 };
 
 struct ifmedia_description *get_toptype_desc(int ifmw)
