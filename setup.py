@@ -24,12 +24,60 @@
 # SUCH DAMAGE.
 #
 
+import os
+import re
+import subprocess
+import sys
+
 import Cython.Compiler.Options
 Cython.Compiler.Options.annotate = True
 
-from distutils.core import setup
+from setuptools import setup
 from Cython.Distutils.extension import Extension
 from Cython.Distutils import build_ext
+
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PLACEHOLDER = re.compile(r'@[A-Za-z_][A-Za-z0-9_]*@')
+
+
+def generate_config():
+    """Derive config.pxi/config.h from the pinned headers via autoconf.
+
+    TrueNAS CORE 13.3 generated both at build time; they are gitignored
+    build artifacts, not sources. netif.pyx and defs.pxd `include "config.pxi"`,
+    so a stale copy silently adds or omits public API members with nothing to
+    detect the disagreement (the internal development record).
+
+    The committed configure is fully expanded, so this needs only /bin/sh and a
+    C compiler -- no autoconf build dependency. Every failure mode is fatal:
+    a silent skip is what put frozen values in the tree in the first place.
+    """
+    configure = os.path.join(HERE, 'configure')
+    if not os.path.isfile(configure):
+        sys.exit('py-netif: configure is missing; cannot derive config.pxi')
+
+    try:
+        subprocess.run(['/bin/sh', configure], cwd=HERE, check=True)
+    except subprocess.CalledProcessError as exc:
+        sys.exit('py-netif: configure failed with exit status %d' % exc.returncode)
+
+    config_pxi = os.path.join(HERE, 'config.pxi')
+    if not os.path.isfile(config_pxi):
+        sys.exit('py-netif: configure did not produce config.pxi')
+
+    with open(config_pxi) as f:
+        body = f.read()
+
+    leftover = PLACEHOLDER.search(body)
+    if leftover:
+        sys.exit(
+            'py-netif: config.pxi still contains the unsubstituted placeholder %s'
+            % leftover.group(0)
+        )
+
+
+generate_config()
 
 
 extensions = [

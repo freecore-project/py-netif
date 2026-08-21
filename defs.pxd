@@ -52,8 +52,8 @@ cdef extern from "sys/types.h":
     ctypedef unsigned char u_char
     ctypedef unsigned short u_short
     ctypedef unsigned long u_long
-    ctypedef long caddr_t
-    ctypedef char sa_family_t
+    ctypedef char* caddr_t
+    ctypedef unsigned char sa_family_t
     ctypedef short in_port_t
     ctypedef int in_addr
 
@@ -110,12 +110,18 @@ cdef extern from "sys/socket.h":
         AF_ATM
         AF_NETGRAPH
         AF_SLOW
-        AF_SCLUSTER
         AF_ARP
         AF_BLUETOOTH
         AF_IEEE80211
-        AF_INET_SDP
-        AF_INET6_SDP
+
+    IF HAVE_AF_SCLUSTER:
+        enum:
+            AF_SCLUSTER
+
+    IF HAVE_AF_INET_SDP:
+        enum:
+            AF_INET_SDP
+            AF_INET6_SDP
 
     enum:
         NET_RT_DUMP
@@ -254,7 +260,7 @@ cdef extern from "net/if.h":
         int  ifru_media
         caddr_t  ifru_data
         int ifru_cap[2]
-        uint8_t ifru_fib
+        unsigned int ifru_fib
         u_char ifru_vlan_pcp
 
     cdef struct ifreq:
@@ -275,7 +281,6 @@ cdef extern from "net/if.h":
         uint8_t ifi_hdrlen
         uint8_t ifi_link_state
         uint8_t ifi_vhid
-        uint8_t ifi_baudrate_pf
         uint16_t ifi_datalen
         uint32_t ifi_mtu
         uint32_t ifi_metric
@@ -547,7 +552,6 @@ cdef extern from "net/route.h":
         RTM_REDIRECT
         RTM_MISS
         RTM_LOCK
-        RTM_RESOLVE
         RTM_NEWADDR
         RTM_DELADDR
         RTM_IFINFO
@@ -555,6 +559,10 @@ cdef extern from "net/route.h":
         RTM_DELMADDR
         RTM_IFANNOUNCE
         RTM_IEEE80211
+
+    IF HAVE_RTM_RESOLVE:
+        enum:
+            RTM_RESOLVE
 
     enum:
         RTF_UP
@@ -845,6 +853,7 @@ cdef extern from "net/if_vlan_var.h":
     cdef struct vlanreq:
         char vlr_parent[IFNAMSIZ]
         u_short vlr_tag
+        u_short vlr_proto
 
 
 cdef extern from "netinet/ip_carp.h":

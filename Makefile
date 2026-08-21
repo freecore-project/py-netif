@@ -1,4 +1,4 @@
-PYTHON ?= /usr/local/bin/python2.7
+PYTHON ?= /usr/local/bin/python3
 PREFIX ?= /usr/local
 
 build:
